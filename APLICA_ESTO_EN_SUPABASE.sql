@@ -1,5 +1,5 @@
 -- ============================================================
--- NANY OS — SCRIPT IDEMPOTENTE (se puede ejecutar varias veces sin error)
+-- DanyOS — SCRIPT IDEMPOTENTE (se puede ejecutar varias veces sin error)
 -- Copia TODO esto y pégalo en: supabase.com → tu proyecto → SQL Editor
 -- ============================================================
 
