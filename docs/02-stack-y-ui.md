@@ -4,13 +4,13 @@
 
 | Capa | Tecnología | Por qué |
 |---|---|---|
-| Generación UI | **Lovable** | Integración nativa con Supabase (auth + tipos + RLS ya cableados) |
-| Frontend | **React 18 + Vite + TypeScript** | Lo que Lovable produce; tipado contra el esquema real |
-| Estilos | **Tailwind CSS + shadcn/ui** | Tokens de diseño centralizados, componentes accesibles |
+| Frontend | **React 18 + Vite + TypeScript** | Código propio en este repo (`src/`), sin generador externo |
+| Estilos | **Tailwind CSS** + componentes propios (`src/components/ui`) | Tokens de diseño centralizados, sin dependencia de un builder |
 | Datos | **supabase-js + TanStack Query** | Caché, reintentos, invalidación y persistencia offline |
-| Gráficas | **Recharts** | Ligero, declarativo, se tematiza con los tokens |
+| Ruteo | **React Router** | Login, Dashboard, Proyectos, Finanzas, Onboarding |
 | PWA | **vite-plugin-pwa** | Manifest + Service Worker con una línea de config |
 | Backend | **Supabase** (Postgres, Auth, Storage, Realtime, pg_cron) | Todo el cálculo y la automatización viven en la base |
+| Despliegue | **Vercel**, conectado directo al repo de GitHub | Deploy automático en cada push — ver README.md |
 
 ## Tokens de diseño (paleta minimalista)
 
@@ -105,37 +105,16 @@ VitePWA({
 Persistencia offline: `@tanstack/query-persist-client` + IndexedDB para que el
 dashboard abra con los últimos KPIs sin conexión.
 
-## Prompt maestro para Lovable
+## Dónde está cada página
 
-Pega esto en Lovable después de conectar tu proyecto Supabase (con las
-migraciones ya aplicadas):
-
-> Crea una PWA llamada "Nany OS" conectada a mi Supabase existente.
-> Estética: fondo #0A0A0A, tarjetas #111111, acento beige #D2B48C (solo para
-> CTAs y cifras positivas), texto #EAEAEA, tipografía Inter y cifras en
-> JetBrains Mono. Minimalista, mucho espacio negativo, sin gradientes.
->
-> Páginas:
-> 1. **Dashboard**: tarjetas KPI desde `v_resumen_negocio` (ingresos, egresos,
->    por cobrar, burn mensual); tabla de proyectos desde `v_roi_proyecto` con
->    barra de avance, rentabilidad y ROI (verde-beige positivo, rojo #E5484D
->    negativo); gráfica de tendencia desde `snapshots_kpi`; panel lateral de
->    alertas desde `v_proximas_renovaciones`.
-> 2. **Proyectos**: lista + detalle con tareas (peso porcentual editable,
->    aviso si `pesos_balanceados` es false), activos adjuntos (links y subida
->    al bucket `activos`), pipeline de ventas tipo kanban desde
->    `pipeline_etapas`.
-> 3. **Finanzas**: registro rápido de transacciones (selector de categoría
->    desde `categorias_financieras`, capa y clase de ingreso), gestor de
->    suscripciones con próxima renovación, vista de cuentas por cobrar con
->    estados pendiente/cobrada/vencida.
-> 4. **Onboarding**: lista de plantillas; botón "Desplegar cliente" que abre
->    un modal (nombre, cliente, fecha) y llama
->    `supabase.rpc('instanciar_plantilla', …)`; editor de plantillas propias.
->
-> Usa TanStack Query con suscripciones Realtime a `transacciones` y `tareas`
-> para refrescar el ROI en vivo. No calcules ningún KPI en el cliente: todo
-> viene de las vistas.
+| Página | Archivo | Consume |
+|---|---|---|
+| Dashboard | `src/modulos/dashboard/DashboardPage.tsx` | `v_resumen_negocio`, `v_roi_proyecto`, `v_proximas_renovaciones` |
+| Proyectos (lista) | `src/modulos/proyectos/ProyectosListPage.tsx` | `proyectos` |
+| Proyecto (detalle) | `src/modulos/proyectos/ProyectoDetallePage.tsx` + `TareasPanel`, `ActivosPanel`, `PipelinePanel` | `tareas`, `activos_proyecto`, `pipeline_etapas`, `v_progreso_proyecto`, `v_roi_proyecto` |
+| Finanzas | `src/modulos/finanzas/FinanzasPage.tsx` + `SuscripcionesPanel.tsx` | `transacciones`, `suscripciones`, `categorias_financieras` |
+| Onboarding | `src/modulos/onboarding/OnboardingPage.tsx` | `plantillas`, RPC `instanciar_plantilla` |
+| Login | `src/modulos/auth/LoginPage.tsx` | Supabase Auth (email/password) |
 
 ## Roadmap sugerido (siguiente nivel)
 

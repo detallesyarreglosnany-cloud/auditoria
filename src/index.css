@@ -1,0 +1,29 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-borde;
+  }
+  body {
+    @apply bg-fondo text-texto antialiased;
+    font-feature-settings: 'tnum' 1;
+  }
+  ::selection {
+    @apply bg-acento-suave text-acento;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-fondo;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-borde rounded-full;
+  }
+  .cifra {
+    @apply font-mono tabular-nums;
+  }
+}
