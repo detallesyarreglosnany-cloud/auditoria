@@ -1,18 +1,50 @@
 -- ============================================================
--- NANY OS — TODAS LAS MIGRACIONES EN UN ÚNICO SCRIPT
+-- NANY OS — SCRIPT IDEMPOTENTE (se puede ejecutar varias veces sin error)
 -- Copia TODO esto y pégalo en: supabase.com → tu proyecto → SQL Editor
 -- ============================================================
 
--- MIGRACIÓN 1 · NÚCLEO DE PROYECTOS
--- ============================================================
-
 create extension if not exists "pgcrypto";
+create extension if not exists pg_cron;
 
-create type estado_proyecto as enum ('idea', 'onboarding', 'activo', 'pausado', 'completado', 'archivado');
-create type estado_tarea    as enum ('pendiente', 'en_progreso', 'completada', 'bloqueada');
-create type tipo_activo     as enum ('link', 'archivo', 'carpeta_drive', 'credencial', 'documento');
+-- ---------- Tipos enumerados (creación segura) ----------
+do $$ begin
+  create type estado_proyecto as enum ('idea', 'onboarding', 'activo', 'pausado', 'completado', 'archivado');
+exception when duplicate_object then null; end $$;
 
-create table proyectos (
+do $$ begin
+  create type estado_tarea as enum ('pendiente', 'en_progreso', 'completada', 'bloqueada');
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create type tipo_activo as enum ('link', 'archivo', 'carpeta_drive', 'credencial', 'documento');
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create type flujo_transaccion as enum ('ingreso', 'egreso');
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create type capa_financiera as enum ('inversion', 'ingreso', 'gasto_operativo');
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create type clase_ingreso as enum ('recurrente', 'pago_unico', 'cuenta_por_cobrar');
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create type estado_transaccion as enum ('confirmada', 'pendiente', 'cobrada', 'vencida');
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create type ciclo_facturacion as enum ('mensual', 'trimestral', 'anual');
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create type estado_suscripcion as enum ('activa', 'pausada', 'cancelada');
+exception when duplicate_object then null; end $$;
+
+-- ---------- Tablas: núcleo de proyectos ----------
+create table if not exists proyectos (
   id              uuid primary key default gen_random_uuid(),
   user_id         uuid not null default auth.uid() references auth.users (id) on delete cascade,
   nombre          text not null,
@@ -28,7 +60,7 @@ create table proyectos (
   actualizado_en  timestamptz not null default now()
 );
 
-create table tareas (
+create table if not exists tareas (
   id              uuid primary key default gen_random_uuid(),
   user_id         uuid not null default auth.uid() references auth.users (id) on delete cascade,
   proyecto_id     uuid not null references proyectos (id) on delete cascade,
@@ -43,7 +75,7 @@ create table tareas (
   creado_en       timestamptz not null default now()
 );
 
-create index idx_tareas_proyecto on tareas (proyecto_id);
+create index if not exists idx_tareas_proyecto on tareas (proyecto_id);
 
 create or replace function validar_pesos_proyecto()
 returns trigger language plpgsql as $$
@@ -62,6 +94,7 @@ begin
   return new;
 end $$;
 
+drop trigger if exists trg_validar_pesos on tareas;
 create trigger trg_validar_pesos
   before insert or update of peso_porcentual, proyecto_id on tareas
   for each row execute function validar_pesos_proyecto();
@@ -77,11 +110,12 @@ begin
   return new;
 end $$;
 
+drop trigger if exists trg_marcar_completada on tareas;
 create trigger trg_marcar_completada
   before update of estado on tareas
   for each row execute function marcar_completada();
 
-create table activos_proyecto (
+create table if not exists activos_proyecto (
   id           uuid primary key default gen_random_uuid(),
   user_id      uuid not null default auth.uid() references auth.users (id) on delete cascade,
   proyecto_id  uuid not null references proyectos (id) on delete cascade,
@@ -94,7 +128,7 @@ create table activos_proyecto (
   check (tipo = 'carpeta_drive' or url is not null or storage_path is not null)
 );
 
-create index idx_activos_proyecto on activos_proyecto (proyecto_id);
+create index if not exists idx_activos_proyecto on activos_proyecto (proyecto_id);
 
 create or replace function tocar_actualizado_en()
 returns trigger language plpgsql as $$
@@ -103,21 +137,13 @@ begin
   return new;
 end $$;
 
+drop trigger if exists trg_proyectos_touch on proyectos;
 create trigger trg_proyectos_touch
   before update on proyectos
   for each row execute function tocar_actualizado_en();
 
--- MIGRACIÓN 2 · MÓDULO FINANCIERO
--- ============================================================
-
-create type flujo_transaccion as enum ('ingreso', 'egreso');
-create type capa_financiera   as enum ('inversion', 'ingreso', 'gasto_operativo');
-create type clase_ingreso     as enum ('recurrente', 'pago_unico', 'cuenta_por_cobrar');
-create type estado_transaccion as enum ('confirmada', 'pendiente', 'cobrada', 'vencida');
-create type ciclo_facturacion as enum ('mensual', 'trimestral', 'anual');
-create type estado_suscripcion as enum ('activa', 'pausada', 'cancelada');
-
-create table categorias_financieras (
+-- ---------- Tablas: módulo financiero ----------
+create table if not exists categorias_financieras (
   id         uuid primary key default gen_random_uuid(),
   user_id    uuid default auth.uid() references auth.users (id) on delete cascade,
   nombre     text not null,
@@ -128,18 +154,24 @@ create table categorias_financieras (
   unique (user_id, nombre, capa)
 );
 
-insert into categorias_financieras (nombre, capa, icono, es_sistema) values
-  ('Ads',        'inversion', 'megaphone',  true),
-  ('Cursos',     'inversion', 'book',       true),
-  ('Marketing',  'inversion', 'trending-up',true),
-  ('Servicios',  'ingreso',   'briefcase',  true),
-  ('Productos',  'ingreso',   'package',    true),
-  ('Retainers',  'ingreso',   'refresh-cw', true),
-  ('LLMs',       'gasto_operativo', 'cpu',    true),
-  ('SaaS',       'gasto_operativo', 'layers', true),
-  ('Hosting',    'gasto_operativo', 'server', true);
+insert into categorias_financieras (nombre, capa, icono, es_sistema)
+select * from (values
+  ('Ads',        'inversion'::capa_financiera, 'megaphone',  true),
+  ('Cursos',     'inversion'::capa_financiera, 'book',       true),
+  ('Marketing',  'inversion'::capa_financiera, 'trending-up',true),
+  ('Servicios',  'ingreso'::capa_financiera,   'briefcase',  true),
+  ('Productos',  'ingreso'::capa_financiera,   'package',    true),
+  ('Retainers',  'ingreso'::capa_financiera,   'refresh-cw', true),
+  ('LLMs',       'gasto_operativo'::capa_financiera, 'cpu',    true),
+  ('SaaS',       'gasto_operativo'::capa_financiera, 'layers', true),
+  ('Hosting',    'gasto_operativo'::capa_financiera, 'server', true)
+) as x(nombre, capa, icono, es_sistema)
+where not exists (
+  select 1 from categorias_financieras c
+  where c.nombre = x.nombre and c.capa = x.capa and c.user_id is null
+);
 
-create table transacciones (
+create table if not exists transacciones (
   id             uuid primary key default gen_random_uuid(),
   user_id        uuid not null default auth.uid() references auth.users (id) on delete cascade,
   proyecto_id    uuid references proyectos (id) on delete set null,
@@ -159,11 +191,11 @@ create table transacciones (
   check (clase_ingreso is distinct from 'cuenta_por_cobrar' or estado in ('pendiente', 'cobrada', 'vencida'))
 );
 
-create index idx_trans_proyecto  on transacciones (proyecto_id);
-create index idx_trans_fecha     on transacciones (fecha desc);
-create index idx_trans_categoria on transacciones (categoria_id);
+create index if not exists idx_trans_proyecto  on transacciones (proyecto_id);
+create index if not exists idx_trans_fecha     on transacciones (fecha desc);
+create index if not exists idx_trans_categoria on transacciones (categoria_id);
 
-create table suscripciones (
+create table if not exists suscripciones (
   id                uuid primary key default gen_random_uuid(),
   user_id           uuid not null default auth.uid() references auth.users (id) on delete cascade,
   proyecto_id       uuid references proyectos (id) on delete set null,
@@ -179,9 +211,11 @@ create table suscripciones (
   creado_en         timestamptz not null default now()
 );
 
-alter table transacciones
-  add constraint fk_trans_suscripcion
-  foreign key (suscripcion_id) references suscripciones (id) on delete set null;
+do $$ begin
+  alter table transacciones
+    add constraint fk_trans_suscripcion
+    foreign key (suscripcion_id) references suscripciones (id) on delete set null;
+exception when duplicate_object then null; end $$;
 
 create or replace function generar_gastos_suscripciones()
 returns int language plpgsql security definer set search_path = public as $$
@@ -212,12 +246,8 @@ begin
   return generadas;
 end $$;
 
-create extension if not exists pg_cron;
-select cron.schedule(
-  'renovar-suscripciones',
-  '0 6 * * *',
-  $$select generar_gastos_suscripciones()$$
-);
+select cron.unschedule('renovar-suscripciones') where exists (select 1 from cron.job where jobname = 'renovar-suscripciones');
+select cron.schedule('renovar-suscripciones', '0 6 * * *', $$select generar_gastos_suscripciones()$$);
 
 create or replace function marcar_cuentas_vencidas()
 returns int language plpgsql security definer set search_path = public as $$
@@ -232,16 +262,11 @@ begin
   return afectadas;
 end $$;
 
-select cron.schedule(
-  'marcar-cuentas-vencidas',
-  '15 6 * * *',
-  $$select marcar_cuentas_vencidas()$$
-);
+select cron.unschedule('marcar-cuentas-vencidas') where exists (select 1 from cron.job where jobname = 'marcar-cuentas-vencidas');
+select cron.schedule('marcar-cuentas-vencidas', '15 6 * * *', $$select marcar_cuentas_vencidas()$$);
 
--- MIGRACIÓN 3 · PLANTILLAS DE ONBOARDING
--- ============================================================
-
-create table plantillas (
+-- ---------- Tablas: módulo de onboarding (plantillas) ----------
+create table if not exists plantillas (
   id          uuid primary key default gen_random_uuid(),
   user_id     uuid default auth.uid() references auth.users (id) on delete cascade,
   nombre      text not null,
@@ -250,11 +275,13 @@ create table plantillas (
   creado_en   timestamptz not null default now()
 );
 
-alter table proyectos
-  add constraint fk_proyectos_plantilla
-  foreign key (plantilla_id) references plantillas (id) on delete set null;
+do $$ begin
+  alter table proyectos
+    add constraint fk_proyectos_plantilla
+    foreign key (plantilla_id) references plantillas (id) on delete set null;
+exception when duplicate_object then null; end $$;
 
-create table plantilla_tareas (
+create table if not exists plantilla_tareas (
   id              uuid primary key default gen_random_uuid(),
   plantilla_id    uuid not null references plantillas (id) on delete cascade,
   titulo          text not null,
@@ -265,7 +292,7 @@ create table plantilla_tareas (
   es_recurrente   boolean not null default false
 );
 
-create table plantilla_activos (
+create table if not exists plantilla_activos (
   id           uuid primary key default gen_random_uuid(),
   plantilla_id uuid not null references plantillas (id) on delete cascade,
   tipo         tipo_activo not null default 'carpeta_drive',
@@ -273,14 +300,14 @@ create table plantilla_activos (
   url_patron   text not null default ''
 );
 
-create table plantilla_pipeline (
+create table if not exists plantilla_pipeline (
   id           uuid primary key default gen_random_uuid(),
   plantilla_id uuid not null references plantillas (id) on delete cascade,
   etapa        text not null,
   orden        int not null default 0
 );
 
-create table plantilla_stack (
+create table if not exists plantilla_stack (
   id               uuid primary key default gen_random_uuid(),
   plantilla_id     uuid not null references plantillas (id) on delete cascade,
   herramienta      text not null,
@@ -289,7 +316,7 @@ create table plantilla_stack (
   ciclo            ciclo_facturacion not null default 'mensual'
 );
 
-create table pipeline_etapas (
+create table if not exists pipeline_etapas (
   id          uuid primary key default gen_random_uuid(),
   user_id     uuid not null default auth.uid() references auth.users (id) on delete cascade,
   proyecto_id uuid not null references proyectos (id) on delete cascade,
@@ -299,7 +326,7 @@ create table pipeline_etapas (
   completada_en timestamptz
 );
 
-create index idx_pipeline_proyecto on pipeline_etapas (proyecto_id);
+create index if not exists idx_pipeline_proyecto on pipeline_etapas (proyecto_id);
 
 create or replace function instanciar_plantilla(
   p_plantilla_id uuid,
@@ -357,145 +384,110 @@ begin
   return v_proyecto_id;
 end $$;
 
-with p as (
-  insert into plantillas (user_id, nombre, descripcion)
-  values (null, 'Lanzamiento Cliente Estándar',
-          'Onboarding completo: kickoff, Drive, pipeline y stack base. Pesos calibrados para sumar 100%.')
-  returning id
-),
-t as (
-  insert into plantilla_tareas (plantilla_id, titulo, peso_porcentual, orden, offset_dias, es_recurrente)
-  select p.id, x.titulo, x.peso, x.orden, x.offset_dias, x.recurrente
-  from p, (values
-    ('Reunión de kickoff y brief firmado',        10.00, 1, 2,  false),
-    ('Crear estructura de Drive del cliente',      5.00, 2, 1,  false),
-    ('Accesos y credenciales (ads, hosting, CMS)',10.00, 3, 3,  false),
-    ('Diagnóstico inicial y propuesta de valor',  15.00, 4, 7,  false),
-    ('Configuración del stack técnico',           10.00, 5, 7,  false),
-    ('Primer entregable / campaña piloto',        25.00, 6, 21, false),
-    ('Revisión de métricas y ajuste',             15.00, 7, 30, true),
-    ('Reporte mensual y facturación',             10.00, 8, 30, true)
-  ) as x(titulo, peso, orden, offset_dias, recurrente)
-  returning plantilla_id
-),
-a as (
-  insert into plantilla_activos (plantilla_id, tipo, titulo, url_patron)
-  select p.id, x.tipo::tipo_activo, x.titulo, x.url
-  from p, (values
-    ('carpeta_drive', '01 · Brief y contratos — {{cliente}}',   ''),
-    ('carpeta_drive', '02 · Activos de marca — {{cliente}}',    ''),
-    ('carpeta_drive', '03 · Entregables — {{cliente}}',         ''),
-    ('carpeta_drive', '04 · Reportes — {{cliente}}',            ''),
-    ('link',          'Tablero de campaña — {{cliente}}',       'https://ads.google.com')
-  ) as x(tipo, titulo, url)
-  returning plantilla_id
-),
-pl as (
-  insert into plantilla_pipeline (plantilla_id, etapa, orden)
-  select p.id, x.etapa, x.orden
-  from p, (values
-    ('Lead calificado', 1), ('Propuesta enviada', 2), ('Negociación', 3),
-    ('Contrato firmado', 4), ('Onboarding', 5), ('Entrega activa', 6), ('Upsell / renovación', 7)
-  ) as x(etapa, orden)
-  returning plantilla_id
-)
-insert into plantilla_stack (plantilla_id, herramienta, categoria_nombre, costo_estimado, ciclo)
-select p.id, x.herramienta, x.categoria, x.costo, x.ciclo::ciclo_facturacion
-from p, (values
-  ('Claude Pro',      'LLMs',    20.00, 'mensual'),
-  ('Hosting cliente', 'Hosting', 12.00, 'mensual'),
-  ('Canva Pro',       'SaaS',    15.00, 'mensual')
-) as x(herramienta, categoria, costo, ciclo);
+-- ---------- Semilla: plantilla de sistema "Lanzamiento Cliente Estándar" ----------
+do $$
+declare
+  v_plantilla_id uuid;
+begin
+  select id into v_plantilla_id from plantillas where nombre = 'Lanzamiento Cliente Estándar' and user_id is null limit 1;
 
--- MIGRACIÓN 4 · VISTAS KPI Y ROI EN TIEMPO REAL
--- ============================================================
+  if v_plantilla_id is null then
+    insert into plantillas (user_id, nombre, descripcion)
+    values (null, 'Lanzamiento Cliente Estándar',
+            'Onboarding completo: kickoff, Drive, pipeline y stack base. Pesos calibrados para sumar 100%.')
+    returning id into v_plantilla_id;
 
-create view v_progreso_proyecto
+    insert into plantilla_tareas (plantilla_id, titulo, peso_porcentual, orden, offset_dias, es_recurrente)
+    values
+      (v_plantilla_id, 'Reunión de kickoff y brief firmado',        10.00, 1, 2,  false),
+      (v_plantilla_id, 'Crear estructura de Drive del cliente',      5.00, 2, 1,  false),
+      (v_plantilla_id, 'Accesos y credenciales (ads, hosting, CMS)',10.00, 3, 3,  false),
+      (v_plantilla_id, 'Diagnóstico inicial y propuesta de valor',  15.00, 4, 7,  false),
+      (v_plantilla_id, 'Configuración del stack técnico',           10.00, 5, 7,  false),
+      (v_plantilla_id, 'Primer entregable / campaña piloto',        25.00, 6, 21, false),
+      (v_plantilla_id, 'Revisión de métricas y ajuste',             15.00, 7, 30, true),
+      (v_plantilla_id, 'Reporte mensual y facturación',             10.00, 8, 30, true);
+
+    insert into plantilla_activos (plantilla_id, tipo, titulo, url_patron)
+    values
+      (v_plantilla_id, 'carpeta_drive', '01 · Brief y contratos — {{cliente}}',   ''),
+      (v_plantilla_id, 'carpeta_drive', '02 · Activos de marca — {{cliente}}',    ''),
+      (v_plantilla_id, 'carpeta_drive', '03 · Entregables — {{cliente}}',         ''),
+      (v_plantilla_id, 'carpeta_drive', '04 · Reportes — {{cliente}}',            ''),
+      (v_plantilla_id, 'link',          'Tablero de campaña — {{cliente}}',       'https://ads.google.com');
+
+    insert into plantilla_pipeline (plantilla_id, etapa, orden)
+    values
+      (v_plantilla_id, 'Lead calificado', 1), (v_plantilla_id, 'Propuesta enviada', 2),
+      (v_plantilla_id, 'Negociación', 3), (v_plantilla_id, 'Contrato firmado', 4),
+      (v_plantilla_id, 'Onboarding', 5), (v_plantilla_id, 'Entrega activa', 6),
+      (v_plantilla_id, 'Upsell / renovación', 7);
+
+    insert into plantilla_stack (plantilla_id, herramienta, categoria_nombre, costo_estimado, ciclo)
+    values
+      (v_plantilla_id, 'Claude Pro',      'LLMs',    20.00, 'mensual'),
+      (v_plantilla_id, 'Hosting cliente', 'Hosting', 12.00, 'mensual'),
+      (v_plantilla_id, 'Canva Pro',       'SaaS',    15.00, 'mensual');
+  end if;
+end $$;
+
+-- ---------- Vistas KPI y ROI en tiempo real ----------
+create or replace view v_progreso_proyecto
 with (security_invoker = true) as
 select
-  p.id                                          as proyecto_id,
-  p.nombre,
-  p.estado,
-  count(t.id)                                   as total_tareas,
+  p.id as proyecto_id, p.nombre, p.estado,
+  count(t.id) as total_tareas,
   count(t.id) filter (where t.estado = 'completada') as tareas_completadas,
-  coalesce(sum(t.peso_porcentual), 0)           as suma_pesos,
-  coalesce(sum(t.peso_porcentual), 0) = 100     as pesos_balanceados,
-  round(coalesce(
-    sum(t.peso_porcentual) filter (where t.estado = 'completada'), 0
-  ), 2)                                         as avance_pct
+  coalesce(sum(t.peso_porcentual), 0) as suma_pesos,
+  coalesce(sum(t.peso_porcentual), 0) = 100 as pesos_balanceados,
+  round(coalesce(sum(t.peso_porcentual) filter (where t.estado = 'completada'), 0), 2) as avance_pct
 from proyectos p
 left join tareas t on t.proyecto_id = p.id
 group by p.id;
 
-create view v_finanzas_proyecto
+create or replace view v_finanzas_proyecto
 with (security_invoker = true) as
 select
-  p.id                                                        as proyecto_id,
-  p.nombre,
-  coalesce(sum(tr.monto) filter (
-    where tr.flujo = 'ingreso' and tr.estado in ('confirmada', 'cobrada')), 0) as ingresos_cobrados,
-  coalesce(sum(tr.monto) filter (
-    where tr.clase_ingreso = 'recurrente' and tr.estado in ('confirmada', 'cobrada')
-      and tr.fecha >= date_trunc('month', current_date)), 0)  as mrr_mes_actual,
-  coalesce(sum(tr.monto) filter (
-    where tr.clase_ingreso = 'cuenta_por_cobrar' and tr.estado = 'pendiente'), 0) as por_cobrar,
-  coalesce(sum(tr.monto) filter (
-    where tr.clase_ingreso = 'cuenta_por_cobrar' and tr.estado = 'vencida'), 0)   as vencido,
-  coalesce(sum(tr.monto) filter (
-    where tr.flujo = 'egreso' and c.capa = 'inversion'), 0)   as inversion_total,
-  coalesce(sum(tr.monto) filter (
-    where tr.flujo = 'egreso' and c.capa = 'gasto_operativo'), 0) as gastos_operativos,
-  coalesce(sum(tr.monto) filter (where tr.flujo = 'egreso'), 0)   as egresos_totales
+  p.id as proyecto_id, p.nombre,
+  coalesce(sum(tr.monto) filter (where tr.flujo = 'ingreso' and tr.estado in ('confirmada', 'cobrada')), 0) as ingresos_cobrados,
+  coalesce(sum(tr.monto) filter (where tr.clase_ingreso = 'recurrente' and tr.estado in ('confirmada', 'cobrada') and tr.fecha >= date_trunc('month', current_date)), 0) as mrr_mes_actual,
+  coalesce(sum(tr.monto) filter (where tr.clase_ingreso = 'cuenta_por_cobrar' and tr.estado = 'pendiente'), 0) as por_cobrar,
+  coalesce(sum(tr.monto) filter (where tr.clase_ingreso = 'cuenta_por_cobrar' and tr.estado = 'vencida'), 0) as vencido,
+  coalesce(sum(tr.monto) filter (where tr.flujo = 'egreso' and c.capa = 'inversion'), 0) as inversion_total,
+  coalesce(sum(tr.monto) filter (where tr.flujo = 'egreso' and c.capa = 'gasto_operativo'), 0) as gastos_operativos,
+  coalesce(sum(tr.monto) filter (where tr.flujo = 'egreso'), 0) as egresos_totales
 from proyectos p
 left join transacciones tr on tr.proyecto_id = p.id
 left join categorias_financieras c on c.id = tr.categoria_id
 group by p.id;
 
-create view v_roi_proyecto
+create or replace view v_roi_proyecto
 with (security_invoker = true) as
 select
-  f.proyecto_id,
-  f.nombre,
-  pr.estado,
-  pr.avance_pct,
-  pr.pesos_balanceados,
-  f.ingresos_cobrados,
-  f.mrr_mes_actual,
-  f.por_cobrar,
-  f.vencido,
-  f.inversion_total,
-  f.gastos_operativos,
-  f.egresos_totales,
-  round(f.ingresos_cobrados - f.egresos_totales, 2)           as rentabilidad,
-  case when f.egresos_totales > 0
-    then round((f.ingresos_cobrados - f.egresos_totales) / f.egresos_totales * 100, 2)
-  end                                                          as roi_pct,
-  case when f.ingresos_cobrados > 0
-    then round((f.ingresos_cobrados - f.egresos_totales) / f.ingresos_cobrados * 100, 2)
-  end                                                          as margen_pct,
-  case when f.egresos_totales > 0 and coalesce(p.presupuesto, 0) > 0
-    then round((pr.avance_pct / 100.0) / (f.egresos_totales / p.presupuesto), 2)
-  end                                                          as indice_salud
+  f.proyecto_id, f.nombre, pr.estado, pr.avance_pct, pr.pesos_balanceados,
+  f.ingresos_cobrados, f.mrr_mes_actual, f.por_cobrar, f.vencido,
+  f.inversion_total, f.gastos_operativos, f.egresos_totales,
+  round(f.ingresos_cobrados - f.egresos_totales, 2) as rentabilidad,
+  case when f.egresos_totales > 0 then round((f.ingresos_cobrados - f.egresos_totales) / f.egresos_totales * 100, 2) end as roi_pct,
+  case when f.ingresos_cobrados > 0 then round((f.ingresos_cobrados - f.egresos_totales) / f.ingresos_cobrados * 100, 2) end as margen_pct,
+  case when f.egresos_totales > 0 and coalesce(p.presupuesto, 0) > 0 then round((pr.avance_pct / 100.0) / (f.egresos_totales / p.presupuesto), 2) end as indice_salud
 from v_finanzas_proyecto f
 join v_progreso_proyecto pr on pr.proyecto_id = f.proyecto_id
 join proyectos p on p.id = f.proyecto_id;
 
-create view v_resumen_negocio
+create or replace view v_resumen_negocio
 with (security_invoker = true) as
 select
   t.user_id,
-  coalesce(sum(t.monto) filter (
-    where t.flujo = 'ingreso' and t.estado in ('confirmada','cobrada')), 0) as ingresos_totales,
-  coalesce(sum(t.monto) filter (where t.flujo = 'egreso'), 0)               as egresos_totales,
-  coalesce(sum(t.monto) filter (
-    where t.clase_ingreso = 'cuenta_por_cobrar' and t.estado in ('pendiente','vencida')), 0) as por_cobrar_total,
+  coalesce(sum(t.monto) filter (where t.flujo = 'ingreso' and t.estado in ('confirmada','cobrada')), 0) as ingresos_totales,
+  coalesce(sum(t.monto) filter (where t.flujo = 'egreso'), 0) as egresos_totales,
+  coalesce(sum(t.monto) filter (where t.clase_ingreso = 'cuenta_por_cobrar' and t.estado in ('pendiente','vencida')), 0) as por_cobrar_total,
   (select coalesce(sum(monto), 0) from suscripciones s
-    where s.estado = 'activa' and s.user_id = t.user_id
-      and s.ciclo = 'mensual')                                              as burn_mensual_suscripciones
+    where s.estado = 'activa' and s.user_id = t.user_id and s.ciclo = 'mensual') as burn_mensual_suscripciones
 from transacciones t
 group by t.user_id;
 
-create view v_proximas_renovaciones
+create or replace view v_proximas_renovaciones
 with (security_invoker = true) as
 select s.*, s.proxima_renovacion - current_date as dias_restantes
 from suscripciones s
@@ -503,7 +495,7 @@ where s.estado = 'activa'
   and s.proxima_renovacion <= current_date + 14
 order by s.proxima_renovacion;
 
-create table snapshots_kpi (
+create table if not exists snapshots_kpi (
   id            uuid primary key default gen_random_uuid(),
   user_id       uuid not null references auth.users (id) on delete cascade,
   proyecto_id   uuid not null references proyectos (id) on delete cascade,
@@ -534,15 +526,10 @@ begin
   return afectadas;
 end $$;
 
-select cron.schedule(
-  'snapshots-kpi-diarios',
-  '30 6 * * *',
-  $$select tomar_snapshots_kpi()$$
-);
+select cron.unschedule('snapshots-kpi-diarios') where exists (select 1 from cron.job where jobname = 'snapshots-kpi-diarios');
+select cron.schedule('snapshots-kpi-diarios', '30 6 * * *', $$select tomar_snapshots_kpi()$$);
 
--- MIGRACIÓN 5 · ROW LEVEL SECURITY (RLS)
--- ============================================================
-
+-- ---------- Seguridad: Row Level Security ----------
 do $$
 declare
   t text;
@@ -552,6 +539,7 @@ begin
     'transacciones', 'suscripciones', 'pipeline_etapas', 'snapshots_kpi'
   ] loop
     execute format('alter table %I enable row level security', t);
+    execute format('drop policy if exists "propietario_todo" on %I', t);
     execute format($f$
       create policy "propietario_todo" on %I
         for all to authenticated
@@ -562,11 +550,12 @@ begin
 end $$;
 
 alter table categorias_financieras enable row level security;
-
+drop policy if exists "leer_categorias" on categorias_financieras;
 create policy "leer_categorias" on categorias_financieras
   for select to authenticated
   using (user_id is null or user_id = auth.uid());
 
+drop policy if exists "gestionar_categorias_propias" on categorias_financieras;
 create policy "gestionar_categorias_propias" on categorias_financieras
   for all to authenticated
   using (user_id = auth.uid() and not es_sistema)
@@ -578,10 +567,12 @@ alter table plantilla_activos  enable row level security;
 alter table plantilla_pipeline enable row level security;
 alter table plantilla_stack    enable row level security;
 
+drop policy if exists "leer_plantillas" on plantillas;
 create policy "leer_plantillas" on plantillas
   for select to authenticated
   using (user_id is null or user_id = auth.uid());
 
+drop policy if exists "gestionar_plantillas_propias" on plantillas;
 create policy "gestionar_plantillas_propias" on plantillas
   for all to authenticated
   using (user_id = auth.uid())
@@ -594,6 +585,7 @@ begin
   foreach t in array array[
     'plantilla_tareas', 'plantilla_activos', 'plantilla_pipeline', 'plantilla_stack'
   ] loop
+    execute format('drop policy if exists "leer_detalle_plantilla" on %I', t);
     execute format($f$
       create policy "leer_detalle_plantilla" on %I
         for select to authenticated
@@ -603,6 +595,7 @@ begin
             and (p.user_id is null or p.user_id = auth.uid())
         ))
     $f$, t, t);
+    execute format('drop policy if exists "gestionar_detalle_plantilla" on %I', t);
     execute format($f$
       create policy "gestionar_detalle_plantilla" on %I
         for all to authenticated
@@ -622,18 +615,22 @@ insert into storage.buckets (id, name, public)
 values ('activos', 'activos', false)
 on conflict (id) do nothing;
 
+drop policy if exists "activos_propios_select" on storage.objects;
 create policy "activos_propios_select" on storage.objects
   for select to authenticated
   using (bucket_id = 'activos' and owner = auth.uid());
 
+drop policy if exists "activos_propios_insert" on storage.objects;
 create policy "activos_propios_insert" on storage.objects
   for insert to authenticated
   with check (bucket_id = 'activos' and owner = auth.uid());
 
+drop policy if exists "activos_propios_delete" on storage.objects;
 create policy "activos_propios_delete" on storage.objects
   for delete to authenticated
   using (bucket_id = 'activos' and owner = auth.uid());
 
 -- ============================================================
 -- ✅ LISTO — Todo está instalado y configurado
+-- Puedes ejecutar este script varias veces sin que dé error.
 -- ============================================================
